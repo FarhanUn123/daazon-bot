@@ -58,32 +58,44 @@ if prompt := st.chat_input("Type your question..."):
     ]
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            reply = None
-            last_error = None
-            # Try each model, with one quick retry, until one answers
-            for model in MODELS:
-                for attempt in range(2):
-                    try:
-                        response = client.models.generate_content(
-                            model=model,
-                            contents=history,
-                            config=types.GenerateContentConfig(
-                                system_instruction=SYSTEM_PROMPT,
-                                max_output_tokens=500,
-                            ),
-                        )
-                        reply = response.text or "Sorry, I couldn't answer that. Please try again."
-                        break
-                    except Exception as e:
-                        last_error = e
-                        time.sleep(2)
-                if reply:
-                    break
+        box = st.empty()
+        box.markdown("_Typing..._")
+        reply = None
+        last_error = None
 
-            if not reply:
-                reply = "Sorry, I'm having trouble right now. Please try again in a minute."
-                st.error(f"Error details: {last_error}")
-        st.markdown(reply)
+        # Try each model until one answers. For each, first try with minimal
+        # "thinking" (fastest); if a model doesn't support that, try without it.
+        for model in MODELS:
+            for fast in (True, False):
+                config = types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    max_output_tokens=500,
+                    thinking_config=types.ThinkingConfig(thinking_level="MINIMAL") if fast else None,
+                )
+                try:
+                    text = ""
+                    # Stream the answer so words appear as they are written
+                    for chunk in client.models.generate_content_stream(
+                        model=model, contents=history, config=config
+                    ):
+                        if chunk.text:
+                            text += chunk.text
+                            box.markdown(text + "▌")
+                    if text:
+                        reply = text
+                        break
+                except Exception as e:
+                    last_error = e
+                    if text:  # stream broke midway: keep what we have
+                        reply = text
+                        break
+            if reply:
+                break
+            time.sleep(1)
+
+        if not reply:
+            reply = "Sorry, I'm having trouble right now. Please try again in a minute."
+            st.error(f"Error details: {last_error}")
+        box.markdown(reply)
 
     st.session_state.messages.append({"role": "assistant", "content": reply})
